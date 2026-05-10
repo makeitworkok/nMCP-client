@@ -19,6 +19,7 @@ dist_release/
 build_onefile/
 build_release/
 pyinstaller-build.log
+*.spec
 *.egg-info/
 
 # Environment files (never commit real secrets)
