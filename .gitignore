@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+dist_onefile/
+dist_release/
+build_onefile/
+build_release/
+pyinstaller-build.log
+*.egg-info/
+
+# Environment files (never commit real secrets)
+.env
+
+# Runtime logs (keep .gitkeep to preserve the directory)
+logs/
+logs/*.log
+logs/*.log.*
+
+# Config with secrets
+# (config.json is user-specific; stored in ~/.nmcp_client/ by default)
+config.json
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
