@@ -108,7 +108,7 @@ class NiagaraMCPClient:
                     if self._should_retry_scram_over_https(resolved_url, exc):
                         resolved_url = self._to_https_url(resolved_url)
                         logger.warning(
-                            "SCRAM login redirected on HTTP; retrying with HTTPS endpoint %s",
+                            "Authentication redirected on HTTP; retrying with HTTPS endpoint %s",
                             resolved_url,
                         )
                         cookies, discovered_token = await self._build_session_auth(
@@ -222,7 +222,7 @@ class NiagaraMCPClient:
         password: str,
         token: str,
     ) -> tuple[CookieJar, str]:
-        """Run Niagara SCRAM login and return session cookies + backend token."""
+        """Run Niagara authentication login and return session cookies + backend token."""
         session = NiagaraSession(base_url, username, password, token)
         session.login()
         discovered_token = getattr(session, "_backend_mcp_token", "").strip()
@@ -296,7 +296,7 @@ class NiagaraMCPClient:
         return url.replace("http://", "https://", 1)
 
     def _should_retry_scram_over_https(self, url: str, exc: RuntimeError) -> bool:
-        """Detect Niagara SCRAM redirect errors that should be retried over HTTPS."""
+        """Detect Niagara authentication redirect errors that should be retried over HTTPS."""
         if urlsplit(url).scheme.lower() != "http":
             return False
 

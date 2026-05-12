@@ -2,7 +2,7 @@
 
 Version: 0.0.1
 
-Compatibility: Tested against nMCP.jar v0.7.0.
+Compatibility: Requires nMCP.jar v0.8.0+.
 
 Lightweight desktop MCP client for [nMCP server](https://github.com/makeitworkok/nMCP) connections.
 

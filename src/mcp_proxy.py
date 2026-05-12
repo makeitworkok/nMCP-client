@@ -3,8 +3,8 @@
 """
 nMCP Proxy
 ================
-Authenticates to Niagara 4 using the SCRAM-SHA-512 scheme
-(which internally uses PBKDF2-HMAC-SHA-256 / HMAC-SHA-256) and
+Authenticates to Niagara 4 using challenge-response authentication
+(PBKDF2-HMAC-SHA-256 / HMAC-SHA-256) and
 proxies JSON-RPC requests to the /nmcp servlet.
 
 Usage
@@ -51,13 +51,12 @@ _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 
-# ─────────────────────────── SCRAM implementation ────────────────────────────
+# ─────────────────────────── Authentication implementation ──────────────────────
 #
-# Niagara 4 calls this scheme "scram-sha512" in the Authorization header,
-# but the actual crypto is SHA-256 throughout (PBKDF2-HMAC-SHA256, HMAC-SHA256,
-# SHA256).  The scheme is used purely as a label/negotiation token.
+# Niagara 4 uses a challenge-response scheme negotiated via the Authorization header.
+# The actual crypto is SHA-256 throughout (PBKDF2-HMAC-SHA256, HMAC-SHA256, SHA256).
 #
-# Reference: RFC 5802 (SCRAM), adapted for SHA-256.
+# Reference: RFC 5802, adapted for SHA-256.
 
 _DKLEN = 32   # SHA-256 output bytes
 
@@ -80,7 +79,7 @@ def _xor(a: bytes, b: bytes) -> bytes:
 
 class _ScramClient:
     """
-    One-shot SCRAM-SHA-256 client.
+    One-shot challenge-response authentication client (SHA-256).
 
     Typical usage:
         sc = _ScramClient(username, password)
@@ -175,7 +174,7 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 class NiagaraSession:
-    """Thread-safe Niagara HTTP session with automatic SCRAM re-authentication."""
+    """Thread-safe Niagara HTTP session with automatic re-authentication."""
 
     def __init__(self, base_url: str, username: str, password: str,
                  backend_mcp_token: str):
@@ -195,7 +194,7 @@ class NiagaraSession:
     # ── public ──────────────────────────────────────────────────────────────
 
     def login(self) -> None:
-        """Perform SCRAM-SHA-256 login and cache the resulting session cookie."""
+        """Perform authentication login and cache the resulting session cookie."""
         with self._lock:
             self._do_login()
 
@@ -212,7 +211,7 @@ class NiagaraSession:
         url = f"{self._base}/j_security_check/"
 
         # ── Step 0: Replay the same pre-auth flow used by Niagara's login page.
-        # This establishes origin + user-id cookies required by SCRAM exchange.
+        # This establishes origin + user-id cookies required by the authentication exchange.
         try:
             for pre_url in (
                 f"{self._base}/nmcp",
@@ -253,7 +252,7 @@ class NiagaraSession:
         sc.verify_server(server_final.strip())
 
         # Complete login like Niagara's browser flow (redirect to j_security_check).
-        # This turns successful SCRAM proof into an authenticated web session.
+        # This turns a successful authentication proof into an authenticated web session.
         try:
             finalize_opener = urllib.request.build_opener(
                 urllib.request.HTTPCookieProcessor(self._jar),
