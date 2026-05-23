@@ -19,8 +19,11 @@ A PySide6 desktop application that connects to an MCP server, discovers availabl
 | Tool discovery & schema viewer | ✅ |
 | Chat / workbench interface | ✅ |
 | Agentic loop (LLM ↔ MCP) | ✅ |
+| Plan Mode (review before writes) | ✅ |
 | Read-only tools execute immediately | ✅ |
 | Write tools require explicit approval | ✅ |
+| In-app About dialog | ✅ |
+| In-app Quick Help (Quickstart/API keys) | ✅ |
 | OpenAI (GPT-4o, …) | ✅ |
 | Anthropic (Claude) | ⚠️ Not yet tested |
 | xAI (Grok) | ⚠️ Not yet tested |
@@ -56,7 +59,10 @@ nMCP-client/
         ├── connection_widget.py
         ├── tools_widget.py
         ├── chat_widget.py
-        └── approval_dialog.py
+        ├── approval_dialog.py
+        ├── plan_review_dialog.py
+        ├── help_dialog.py
+        └── about_dialog.py
 ```
 
 ---
@@ -121,10 +127,44 @@ Settings are persisted to a per-user config file automatically when you click **
 ## Safety workflow
 
 * **Read-only tools** (any tool whose name does _not_ match write patterns) execute immediately.
+* **Plan Mode** (chat toggle) first generates a checklist + detailed plan preview for the request.
+* In Plan Mode, **write actions are blocked** until you approve the plan for the current turn.
 * **Write tools** — names starting with `create_`, `delete_`, `update_`, `set_`, `link_`, `wire_`, `rename_`, etc. — trigger an **Approval Dialog** before execution.
 * The dialog shows: tool name · arguments (JSON) · plain-English explanation.
 * Rejecting a write tool sends a "rejected by user" result back to the LLM so it can respond gracefully.
 * All approved actions are logged to `logs/nmcp_client.log`.
+
+---
+
+## Help and About
+
+Use the **Help** menu in the main window:
+
+* **Quick Help** opens a tabbed guide with:
+    * Quickstart steps
+    * API key acquisition guidance for OpenAI, Anthropic, and xAI
+    * Troubleshooting tips for common connection/model/key issues
+* **About nMCP Client** shows:
+    * App name and version (read from `pyproject.toml`)
+    * Author name
+    * Repository link
+    * Placeholder section for future update checks (no network calls yet)
+
+---
+
+## Agent Reliability
+
+To keep the agent from relearning the same operational lessons, this repo now includes persistent guidance files:
+
+* `AGENTS.md` - high-priority operating rules and error-handling guardrails.
+* `docs/niagara-agent-playbook.md` - canonical payload templates, execution sequences, and fix maps.
+* `docs/agent-lessons.md` - rolling incident log for newly discovered failures and corrections.
+
+Recommended maintenance workflow:
+
+1. Add each new recurring issue to `docs/agent-lessons.md`.
+2. Promote broad rules to `AGENTS.md`.
+3. Add reusable payload patterns to `docs/niagara-agent-playbook.md`.
 
 ---
 

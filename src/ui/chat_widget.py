@@ -8,7 +8,9 @@ import html
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
+    QLabel,
     QPushButton,
     QSizePolicy,
     QTextBrowser,
@@ -117,6 +119,12 @@ class ChatWidget(QWidget):
         self._display.clear()
         self._pending_assistant = False
 
+    def is_plan_mode_enabled(self) -> bool:
+        return self._plan_mode_toggle.isChecked()
+
+    def is_strict_paths_enabled(self) -> bool:
+        return self._strict_paths_toggle.isChecked()
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -125,6 +133,28 @@ class ChatWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
+
+        mode_row = QHBoxLayout()
+        self._plan_mode_toggle = QCheckBox("Plan Mode")
+        self._plan_mode_toggle.setToolTip(
+            "When enabled, you must approve a generated plan before write actions can run."
+        )
+        mode_row.addWidget(self._plan_mode_toggle)
+
+        mode_hint = QLabel("Review plan first, then execute")
+        mode_hint.setStyleSheet("color:#64748b; font-size:11px;")
+        mode_row.addWidget(mode_hint)
+
+        self._strict_paths_toggle = QCheckBox("Strict Paths")
+        self._strict_paths_toggle.setChecked(True)
+        self._strict_paths_toggle.setToolTip(
+            "When enabled, the agent must confirm all component paths before using them. "
+            "Disable to allow the agent to infer paths from context."
+        )
+        mode_row.addWidget(self._strict_paths_toggle)
+
+        mode_row.addStretch()
+        root.addLayout(mode_row)
 
         self._display = QTextBrowser()
         self._display.setOpenExternalLinks(False)
@@ -188,6 +218,10 @@ class ChatWidget(QWidget):
         self._input.setEnabled(True)
         self._send_btn.setEnabled(True)
         self._input.setFocus()
+
+    def disable_input(self) -> None:
+        self._input.setEnabled(False)
+        self._send_btn.setEnabled(False)
 
     def _append_block(self, html_block: str) -> None:
         self._display.append(html_block)

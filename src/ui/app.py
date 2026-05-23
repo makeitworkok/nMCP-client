@@ -4,13 +4,18 @@
 from __future__ import annotations
 
 import logging
+import re
 import traceback
+from pathlib import Path
+from typing import Literal
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QDialog,
     QLabel,
+    QMenu,
     QMainWindow,
     QSplitter,
     QStatusBar,
@@ -23,12 +28,19 @@ from src.agent import AgentLoop
 from src.async_runner import AsyncRunner
 from src.llm.base import BaseLLMProvider
 from src.mcp_client import NiagaraMCPClient, build_headers
+from src.ui.about_dialog import AboutDialog
 from src.ui.approval_dialog import ApprovalDialog
 from src.ui.chat_widget import ChatWidget
 from src.ui.connection_widget import ConnectionWidget
+from src.ui.help_dialog import HelpDialog
+from src.ui.plan_review_dialog import PlanReviewDialog
 from src.ui.tools_widget import ToolsWidget
 
 logger = logging.getLogger(__name__)
+
+_APP_NAME = "nMCP Client"
+_AUTHOR_NAME = "Chris Favre"
+_REPO_URL = "https://github.com/makeitworkok/nMCP-client"
 
 
 class _StatusLight(QLabel):
@@ -129,6 +141,19 @@ def _create_llm_provider(config: AppConfig) -> BaseLLMProvider | None:
     return None
 
 
+def _load_project_version() -> str:
+    """Read project version from pyproject.toml with a safe fallback."""
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    try:
+        content = pyproject_path.read_text(encoding="utf-8")
+        match = re.search(r'^version\s*=\s*"([^"]+)"', content, flags=re.MULTILINE)
+        if match:
+            return match.group(1)
+    except Exception:
+        logger.exception("Could not read version from pyproject.toml")
+    return "0.0.0"
+
+
 class MainWindow(QMainWindow):
     """Primary application window."""
 
@@ -141,7 +166,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("nMCP Client")
+        self.setWindowTitle(_APP_NAME)
         self.resize(1280, 820)
         self._status_state = "disconnected"
 
@@ -207,6 +232,10 @@ class MainWindow(QMainWindow):
         self._config: AppConfig = load_config()
         self._tools: list[Any] = []
         self._current_agent: AgentLoop | None = None
+        self._pending_message: str | None = None
+        self._last_assistant_message: str = ""
+        self._agent_phase: Literal["idle", "planning", "executing"] = "idle"
+        self._app_version = _load_project_version()
 
         # Async infrastructure
         self._async_runner = AsyncRunner()
@@ -226,6 +255,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
+        self._build_menu()
+
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
@@ -275,6 +306,17 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(attribution)
 
         self._set_status("Not connected", "disconnected")
+
+    def _build_menu(self) -> None:
+        help_menu: QMenu = self.menuBar().addMenu("Help")
+
+        quick_help_action = QAction("Quick Help", self)
+        quick_help_action.triggered.connect(self._show_help_dialog)
+        help_menu.addAction(quick_help_action)
+
+        about_action = QAction("About nMCP Client", self)
+        about_action.triggered.connect(self._show_about_dialog)
+        help_menu.addAction(about_action)
 
     def _set_status(self, text: str, state: str) -> None:
         """Update status label text and the indicator light state."""
@@ -412,8 +454,57 @@ class MainWindow(QMainWindow):
             return
 
         self._chat_widget.append_user_message(message)
+        self._pending_message = message
 
-        agent = AgentLoop(self._mcp, provider)
+        if self._chat_widget.is_plan_mode_enabled():
+            self._chat_widget.append_system_message(
+                "Plan Mode enabled: generating plan before execution."
+            )
+            self._agent_phase = "planning"
+            self._start_agent_run(
+                message=message,
+                tools=[],
+                planning_mode=True,
+                writes_permitted=False,
+                strict_paths=self._chat_widget.is_strict_paths_enabled(),
+            )
+            return
+
+        self._agent_phase = "executing"
+        self._start_agent_run(
+            message=message,
+            tools=self._tools,
+            planning_mode=False,
+            writes_permitted=True,
+            strict_paths=self._chat_widget.is_strict_paths_enabled(),
+            provider=provider,
+        )
+
+    def _start_agent_run(
+        self,
+        message: str,
+        tools: list[Any],
+        planning_mode: bool,
+        writes_permitted: bool,
+        strict_paths: bool = True,
+        provider: BaseLLMProvider | None = None,
+    ) -> None:
+        active_provider = provider or _create_llm_provider(self._config)
+        if active_provider is None:
+            self._chat_widget.append_error_message(
+                "Could not create LLM provider. Check your provider settings and API key."
+            )
+            self._agent_phase = "idle"
+            self._chat_widget.enable_input()
+            return
+
+        agent = AgentLoop(
+            self._mcp,
+            active_provider,
+            planning_mode=planning_mode,
+            writes_permitted=writes_permitted,
+            strict_paths=strict_paths,
+        )
         agent.set_event_loop(self._async_runner.get_loop())
         self._current_agent = agent
 
@@ -425,7 +516,7 @@ class MainWindow(QMainWindow):
         sigs.error_occurred.connect(self._on_agent_error)
         sigs.status_changed.connect(self._on_agent_status_changed)
 
-        future = self._async_runner.submit(agent.run(message, self._tools))
+        future = self._async_runner.submit(agent.run(message, tools))
         future.add_done_callback(lambda _f: self._sig_agent_done.emit())
 
     @Slot(str, str, str)
@@ -443,6 +534,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_message_complete(self, text: str) -> None:
+        self._last_assistant_message = text
         self._chat_widget.complete_assistant_message(text)
 
     @Slot(str)
@@ -451,9 +543,77 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _handle_agent_done(self) -> None:
+        if self._agent_phase == "planning":
+            self._handle_plan_review()
+            return
+
+        self._agent_phase = "idle"
+        self._pending_message = None
         self._chat_widget.enable_input()
         if self._status_state == "busy":
             self._set_status(f"Connected  |  {len(self._tools)} tools", "connected")
+
+    def _handle_plan_review(self) -> None:
+        dialog = PlanReviewDialog(self._last_assistant_message, self)
+        accepted = dialog.exec() == QDialog.Accepted
+
+        if accepted and dialog.decision == PlanReviewDialog.APPROVE_ROLE:
+            if not self._pending_message:
+                self._chat_widget.append_error_message(
+                    "Could not execute approved plan because the message context is missing."
+                )
+                self._agent_phase = "idle"
+                self._chat_widget.enable_input()
+                return
+            self._chat_widget.append_system_message(
+                "Plan approved. Executing request with write tools enabled for this turn."
+            )
+            # Build an execution message that includes the approved plan so the agent
+            # knows exactly what to do without re-planning or asking for confirmation.
+            execution_message = (
+                f"{self._pending_message}\n\n"
+                f"[APPROVED PLAN — EXECUTE NOW]\n"
+                f"The user has reviewed and approved the following plan. "
+                f"Execute every step in it immediately using the available tools. "
+                f"Do not re-plan, do not summarise the plan again, do not ask for "
+                f"confirmation. Proceed directly with tool calls.\n\n"
+                f"{self._last_assistant_message}"
+            )
+            self._agent_phase = "executing"
+            self._start_agent_run(
+                message=execution_message,
+                tools=self._tools,
+                planning_mode=False,
+                writes_permitted=True,
+                strict_paths=self._chat_widget.is_strict_paths_enabled(),
+            )
+            return
+
+        self._agent_phase = "idle"
+        self._pending_message = None
+        if accepted and dialog.decision == PlanReviewDialog.REVISE_ROLE:
+            self._chat_widget.append_system_message(
+                "Plan not approved. Revise your request and send again."
+            )
+        else:
+            self._chat_widget.append_system_message("Plan execution cancelled.")
+        self._chat_widget.enable_input()
+        if self._status_state == "busy":
+            self._set_status(f"Connected  |  {len(self._tools)} tools", "connected")
+
+    def _show_about_dialog(self) -> None:
+        dialog = AboutDialog(
+            app_name=_APP_NAME,
+            version=self._app_version,
+            author_name=_AUTHOR_NAME,
+            repo_url=_REPO_URL,
+            parent=self,
+        )
+        dialog.exec()
+
+    def _show_help_dialog(self) -> None:
+        dialog = HelpDialog(self)
+        dialog.exec()
 
     # ------------------------------------------------------------------
     # Window close

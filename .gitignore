@@ -34,6 +34,9 @@ logs/*.log.*
 # (config.json is user-specific; stored in ~/.nmcp_client/ by default)
 config.json
 
+# Local-only working files
+.private/
+
 # IDE / OS
 .idea/
 .vscode/

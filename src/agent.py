@@ -23,12 +23,54 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = (
     "You are a Niagara BAS (Building Automation System) assistant. "
     "You help users interact with a Niagara station through available MCP tools. "
+    "\n\n"
+    "PATH RULES:\n"
+    "1. If the user explicitly provides a full component path (e.g. "
+    "   'local:|foxwss:|station:|slot:/Drivers/sandbox'), use it DIRECTLY in tool calls. "
+    "   Do NOT attempt root discovery first — trust the user-supplied path.\n"
+    "2. If no path is given and you need to construct one, call nmcp.component.children "
+    "   with the deepest known ancestor to navigate to the target.\n"
+    "3. Do NOT guess or invent paths. If you have no path at all and the user did not "
+    "   provide one, ask the user for the correct base path before making tool calls.\n"
+    "4. If nmcp.component.children returns 'Path not in allowlisted roots', do NOT retry "
+    "   the same call. Instead ask the user: 'Please provide the exact path — the server's "
+    "   allowlist blocks automatic discovery.' Then wait for their answer.\n"
+    "\n"
+    "AUTONOMY RULES:\n"
+    "1. If the user gives a valid path and asks for a concrete action, execute it without "
+    "   unnecessary follow-up questions.\n"
+    "2. For requests like 'set proper facets/units/defaults' on a folder, first enumerate "
+    "   children, infer standard BAS defaults from point names/types, and proceed. "
+    "   Ask questions only when required data is truly missing.\n"
+    "3. For 'examine/tell me about logic' requests on a folder, inspect child components "
+    "   and links, then provide a concrete summary of the implemented logic.\n"
+    "\n"
+    "WIRESHEET RULES:\n"
+    "**Sequencing Rule:** Always create all points/components first, then add logic blocks (e.g., control, math, compare), then wire/link last. Never attempt to wire or configure logic for components that do not exist yet.\n"
+    "1. Every operation object MUST include a 'type' field "
+    "   (createComponent | setSlot | link | addCompositePin).\n"
+    "2. Always run nmcp.wiresheet.plan before nmcp.wiresheet.apply.\n"
+    "3. For type=setSlot operations, ALWAYS include componentOrd, slot, and value.\n"
+    "4. For type=setSlot operations, componentOrd MUST be an absolute component ORD under "
+    "   an allowlisted root.\n"
+    "5. For facet updates, write slot='facets' as a whole value; do NOT write nested "
+    "   facet sub-slots like facets.units.\n"
+    "6. For type=link operations, ALWAYS include both 'from' and 'to'.\n"
+    "7. For type=link operations, 'from' and 'to' MUST be absolute slot endpoints "
+    "   under an allowlisted root (never bare tokens like out, inA, or out/out).\n"
+    "\n"
     "When performing write operations, be precise and careful with component paths and values. "
     "Explain your reasoning briefly before each tool call. "
     "When the task is complete, give a concise summary to the user."
 )
 
 _MAX_ITERATIONS = 20  # safety cap to prevent infinite loops
+_WIRESHEET_OPERATION_TYPES = {
+    "createComponent",
+    "setSlot",
+    "link",
+    "addCompositePin",
+}
 
 
 class AgentSignals(QObject):
@@ -54,9 +96,15 @@ class AgentLoop:
         self,
         mcp_client: NiagaraMCPClient,
         llm_provider: BaseLLMProvider,
+        planning_mode: bool = False,
+        writes_permitted: bool = True,
+        strict_paths: bool = True,
     ) -> None:
         self._mcp = mcp_client
         self._llm = llm_provider
+        self._planning_mode = planning_mode
+        self._writes_permitted = writes_permitted
+        self._strict_paths = strict_paths
         self.signals = AgentSignals()
 
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -83,7 +131,25 @@ class AgentLoop:
     async def run(self, user_message: str, tools: list[Any]) -> None:
         """Execute one user request end-to-end."""
         self._loop = asyncio.get_event_loop()
-        self._llm.reset_conversation(_SYSTEM_PROMPT)
+        system_prompt = _SYSTEM_PROMPT
+        if self._planning_mode:
+            system_prompt += (
+                " You are currently in PLAN MODE. Do not execute tools. "
+                "Respond with a short checklist (3-7 steps) followed by a detailed "
+                "preview of proposed tool calls and key risks."
+            )
+        if not self._strict_paths:
+            system_prompt += (
+                "\n\nPATH ASSUMPTION MODE is active. You MAY infer reasonable Niagara ORD "
+                "paths from context clues in the user's message (e.g. if the user says "
+                "'sandbox folder', try station:|slot:/Drivers/sandbox or the most likely "
+                "equivalent based on standard Niagara station layout). "
+                "Always state the path you are assuming before making the tool call. "
+                "If the inferred path returns an error, report it and ask the user to "
+                "confirm the exact path before retrying."
+            )
+
+        self._llm.reset_conversation(system_prompt)
         self._llm.add_user_message(user_message)
 
         for iteration in range(_MAX_ITERATIONS):
@@ -128,6 +194,18 @@ class AgentLoop:
 
     async def _execute_tool(self, tc: ToolCall) -> str:
         """Check safety, optionally request approval, then call the tool."""
+        wiresheet_error = _validate_wiresheet_payload(tc.name, tc.arguments)
+        if wiresheet_error:
+            logger.warning("Blocked invalid wiresheet payload: %s", wiresheet_error)
+            return wiresheet_error
+
+        if is_write_tool(tc.name) and not self._writes_permitted:
+            logger.info("Blocked write tool %s because writes are not permitted", tc.name)
+            return (
+                "Write action blocked: this turn is in plan-only mode. "
+                "Approve the plan before executing write tools."
+            )
+
         if is_write_tool(tc.name):
             explanation = generate_explanation(tc.name, tc.arguments)
             approved = await self._request_approval(tc.name, tc.arguments, explanation)
@@ -141,6 +219,7 @@ class AgentLoop:
         try:
             raw_result = await self._mcp.call_tool(tc.name, tc.arguments)
             result_text = _format_tool_result(raw_result)
+            result_text = _augment_path_error(result_text, tc.arguments)
             preview = result_text[:300] + ("…" if len(result_text) > 300 else "")
             self.signals.tool_executed.emit(tc.name, preview)
             logger.info("Tool %s → %s", tc.name, result_text[:500])
@@ -181,3 +260,151 @@ def _format_tool_result(result: Any) -> str:
                 parts.append(str(block))
         return "\n".join(parts)
     return str(result)
+
+
+_ROOT_DISCOVERY_PATHS = [
+    "station:|slot:/",
+]
+
+
+def _augment_path_error(result_text: str, tool_args: dict[str, Any] | None = None) -> str:
+    """Append a discovery hint when the server returns a path-not-allowlisted error."""
+    if "NMCP_PATH_NOT_ALLOWLISTED" not in result_text and "Path not in allowlisted roots" not in result_text:
+        return result_text
+
+    # Detect if the call that failed was itself a root-discovery attempt.
+    # If so, the server's allowlist blocks even root enumeration — ask the user.
+    if tool_args is not None:
+        ord_val = tool_args.get("ord", "")
+        if ord_val in _ROOT_DISCOVERY_PATHS:
+            hint = (
+                "\n\n[AGENT HINT] Root path discovery is blocked by the server's allowlist. "
+                "Do NOT retry component.children on the root path. "
+                "Ask the user: 'Please provide the exact base path (e.g. "
+                "station:|slot:/Drivers/sandbox) — the server blocks automatic discovery.' "
+                "Wait for their answer before making any further tool calls."
+            )
+            return result_text + hint
+
+    hint = (
+        "\n\n[AGENT HINT] The path you used is not in the server's allowlisted roots. "
+        "Call nmcp.component.children with ord='station:|slot:/' to discover valid top-level "
+        "paths, then repeat the operation using an allowlisted path."
+    )
+    return result_text + hint
+
+
+def _is_absolute_slot_endpoint(value: Any) -> bool:
+    """Return True when value looks like an absolute Niagara slot endpoint."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    # We only enforce the absolute ORD marker here; allowlist and slot existence are server-validated.
+    if ":|slot:/" not in text:
+        return False
+    # Reject common malformed shorthand values seen in failures.
+    lowered = text.lower()
+    if lowered in {"out", "in", "ina", "inb", "out/out"}:
+        return False
+    return True
+
+
+def _is_absolute_component_ord(value: Any) -> bool:
+    """Return True when value looks like an absolute Niagara component ORD."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    return ":|slot:/" in text
+
+
+def _validate_wiresheet_payload(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    """Validate wiresheet payload shape before calling the MCP server."""
+    if tool_name not in {
+        "nmcp.wiresheet.apply",
+        "nmcp.wiresheet.plan",
+        "nmcp.wiresheet.diff",
+    }:
+        return None
+
+    operations = arguments.get("operations")
+    if not isinstance(operations, list) or not operations:
+        return None
+
+    for idx, op in enumerate(operations):
+        if not isinstance(op, dict):
+            return f"Invalid wiresheet payload: operation at index {idx} must be an object."
+        op_type = op.get("type")
+        if op_type not in _WIRESHEET_OPERATION_TYPES:
+            return (
+                "Invalid wiresheet payload: each operation must include a valid 'type' "
+                "(createComponent, setSlot, link, addCompositePin). "
+                f"Operation index {idx} has type={op_type!r}."
+            )
+
+        if op_type == "setSlot":
+            component_ord = op.get("componentOrd")
+            slot_name = op.get("slot")
+
+            if not component_ord:
+                return (
+                    "Invalid wiresheet payload: setSlot operations require non-empty "
+                    "'componentOrd', 'slot', and 'value' fields. "
+                    f"Operation index {idx} is missing 'componentOrd'."
+                )
+            if not _is_absolute_component_ord(component_ord):
+                return (
+                    "Invalid wiresheet payload: setSlot 'componentOrd' must be an absolute "
+                    "component ORD under an allowlisted root. "
+                    f"Operation index {idx} has componentOrd={component_ord!r}."
+                )
+            if not isinstance(slot_name, str) or not slot_name.strip():
+                return (
+                    "Invalid wiresheet payload: setSlot operations require non-empty "
+                    "'componentOrd', 'slot', and 'value' fields. "
+                    f"Operation index {idx} is missing 'slot'."
+                )
+            if slot_name.startswith("facets."):
+                return (
+                    "Invalid wiresheet payload: nested facet sub-slots are not supported for "
+                    "setSlot in this environment. Use slot='facets' and provide the full facets "
+                    f"value. Operation index {idx} has slot={slot_name!r}."
+                )
+            if "value" not in op:
+                return (
+                    "Invalid wiresheet payload: setSlot operations require non-empty "
+                    "'componentOrd', 'slot', and 'value' fields. "
+                    f"Operation index {idx} is missing 'value'."
+                )
+
+        if op_type == "link":
+            from_value = op.get("from")
+            to_value = op.get("to")
+
+            if not from_value:
+                return (
+                    "Invalid wiresheet payload: link operations require non-empty 'from' and 'to' fields. "
+                    f"Operation index {idx} is missing 'from'."
+                )
+            if not to_value:
+                return (
+                    "Invalid wiresheet payload: link operations require non-empty 'from' and 'to' fields. "
+                    f"Operation index {idx} is missing 'to'."
+                )
+            if not _is_absolute_slot_endpoint(from_value):
+                return (
+                    "Invalid wiresheet payload: link 'from' must be an absolute slot endpoint under "
+                    "an allowlisted root (not shorthand like out/inA/out/out). "
+                    f"Operation index {idx} has from={from_value!r}."
+                )
+            if not _is_absolute_slot_endpoint(to_value):
+                return (
+                    "Invalid wiresheet payload: link 'to' must be an absolute slot endpoint under "
+                    "an allowlisted root (not shorthand like out/inA/out/out). "
+                    f"Operation index {idx} has to={to_value!r}."
+                )
+
+    return None
