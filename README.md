@@ -24,11 +24,11 @@ A PySide6 desktop application that connects to an MCP server, discovers availabl
 | Write tools require explicit approval | ✅ |
 | In-app About dialog | ✅ |
 | In-app Quick Help (Quickstart/API keys) | ✅ |
+| OpenRouter | ✅ |
+| Ollama (local) | ✅ |
 | OpenAI (GPT-4o, …) | ✅ |
 | Anthropic (Claude) | ⚠️ Not yet tested |
 | xAI (Grok) | ⚠️ Not yet tested |
-| OpenRouter | ⚠️ Not yet tested |
-| Ollama (local) | ⚠️ Not yet tested |
 | Rotating log file | ✅ |
 | Persistent per-user config (outside `dist`) | ✅ |
 
