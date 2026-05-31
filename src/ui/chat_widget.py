@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -48,6 +49,8 @@ class ChatWidget(QWidget):
     """Displays the conversation and accepts user input."""
 
     message_submitted = Signal(str)
+    conversation_selected = Signal(str)
+    conversation_create_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -60,6 +63,37 @@ class ChatWidget(QWidget):
 
     def load_config(self, _config: AppConfig) -> None:
         """Reserved for future config-dependent chat settings."""
+
+    def set_conversations(self, items: list[tuple[str, str]], active_id: str = "") -> None:
+        """Populate conversation picker with (conversation_id, title) tuples."""
+        self._conversation_combo.blockSignals(True)
+        self._conversation_combo.clear()
+        for conv_id, title in items:
+            self._conversation_combo.addItem(title, conv_id)
+
+        if active_id:
+            idx = self._conversation_combo.findData(active_id)
+            if idx >= 0:
+                self._conversation_combo.setCurrentIndex(idx)
+        self._conversation_combo.blockSignals(False)
+
+    def load_history(self, messages: list[tuple[str, str]]) -> None:
+        """Render stored conversation messages in chronological order."""
+        self.clear()
+        for role, text in messages:
+            lowered = role.lower()
+            if lowered == "user":
+                self.append_user_message(text)
+            elif lowered == "assistant":
+                self.complete_assistant_message(text)
+            elif lowered == "tool":
+                self._append_block(
+                    f'<div style="{_STYLE_TOOL}">🔧 {_esc(text)}</div>'
+                )
+            elif lowered == "error":
+                self.append_error_message(text)
+            else:
+                self.append_system_message(text)
 
     @Slot(str)
     def append_user_message(self, text: str) -> None:
@@ -133,6 +167,22 @@ class ChatWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
+
+        thread_row = QHBoxLayout()
+        thread_label = QLabel("Conversation:")
+        thread_label.setStyleSheet("color:#334155; font-size:11px;")
+        thread_row.addWidget(thread_label)
+
+        self._conversation_combo = QComboBox()
+        self._conversation_combo.currentIndexChanged.connect(self._on_conversation_changed)
+        thread_row.addWidget(self._conversation_combo, stretch=1)
+
+        self._new_conversation_btn = QPushButton("New")
+        self._new_conversation_btn.setFixedWidth(60)
+        self._new_conversation_btn.clicked.connect(self.conversation_create_requested)
+        thread_row.addWidget(self._new_conversation_btn)
+
+        root.addLayout(thread_row)
 
         mode_row = QHBoxLayout()
         self._plan_mode_toggle = QCheckBox("Plan Mode")
@@ -213,6 +263,13 @@ class ChatWidget(QWidget):
         self._input.setEnabled(False)
         self._send_btn.setEnabled(False)
         self.message_submitted.emit(text)
+
+    def _on_conversation_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        conv_id = str(self._conversation_combo.itemData(index) or "")
+        if conv_id:
+            self.conversation_selected.emit(conv_id)
 
     def enable_input(self) -> None:
         self._input.setEnabled(True)

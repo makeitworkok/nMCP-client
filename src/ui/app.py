@@ -27,12 +27,14 @@ from config import AppConfig, load_config, save_config
 from src.agent import AgentLoop
 from src.async_runner import AsyncRunner
 from src.llm.base import BaseLLMProvider
+from src.memory import MemoryManager
 from src.mcp_client import NiagaraMCPClient, build_headers
 from src.ui.about_dialog import AboutDialog
 from src.ui.approval_dialog import ApprovalDialog
 from src.ui.chat_widget import ChatWidget
 from src.ui.connection_widget import ConnectionWidget
 from src.ui.help_dialog import HelpDialog
+from src.ui.memory_health_widget import MemoryHealthWidget
 from src.ui.plan_review_dialog import PlanReviewDialog
 from src.ui.tools_widget import ToolsWidget
 
@@ -154,6 +156,21 @@ def _load_project_version() -> str:
     return "0.0.0"
 
 
+def _format_tool_result_to_text(result: Any) -> str:
+    """Convert an MCP tool result object to plain text."""
+    if hasattr(result, "content"):
+        parts: list[str] = []
+        for block in result.content:
+            if hasattr(block, "text"):
+                parts.append(str(block.text))
+            elif hasattr(block, "data"):
+                parts.append(f"[binary data, {len(block.data)} bytes]")
+            else:
+                parts.append(str(block))
+        return "\n".join(parts).strip()
+    return str(result).strip()
+
+
 class MainWindow(QMainWindow):
     """Primary application window."""
 
@@ -163,6 +180,9 @@ class MainWindow(QMainWindow):
     _sig_connected = Signal(list)       # tools list
     _sig_conn_error = Signal(str)       # error message
     _sig_agent_done = Signal()          # agent loop finished
+    _sig_memory_health = Signal(object)
+    _sig_conversations_loaded = Signal(list, str)
+    _sig_conversation_history_loaded = Signal(list)
 
     def __init__(self) -> None:
         super().__init__()
@@ -230,10 +250,12 @@ class MainWindow(QMainWindow):
         """)
 
         self._config: AppConfig = load_config()
+        self._memory = MemoryManager.from_config(self._config)
         self._tools: list[Any] = []
         self._current_agent: AgentLoop | None = None
         self._pending_message: str | None = None
         self._last_assistant_message: str = ""
+        self._active_conversation_id: str = ""
         self._agent_phase: Literal["idle", "planning", "executing"] = "idle"
         self._app_version = _load_project_version()
 
@@ -246,6 +268,9 @@ class MainWindow(QMainWindow):
         self._sig_connected.connect(self._handle_connected)
         self._sig_conn_error.connect(self._handle_conn_error)
         self._sig_agent_done.connect(self._handle_agent_done)
+        self._sig_memory_health.connect(self._on_memory_health_snapshot)
+        self._sig_conversations_loaded.connect(self._on_conversations_loaded)
+        self._sig_conversation_history_loaded.connect(self._on_conversation_history_loaded)
 
         self._build_ui()
         self._load_config_into_widgets()
@@ -275,13 +300,18 @@ class MainWindow(QMainWindow):
         self._conn_widget.disconnect_requested.connect(self._on_disconnect_requested)
 
         self._tools_widget = ToolsWidget()
+        self._memory_health_widget = MemoryHealthWidget()
+        self._memory_health_widget.refresh_requested.connect(self._refresh_memory_health_ui)
 
         left_layout.addWidget(self._conn_widget)
         left_layout.addWidget(self._tools_widget, stretch=1)
+        left_layout.addWidget(self._memory_health_widget)
 
         # Right panel — chat
         self._chat_widget = ChatWidget()
         self._chat_widget.message_submitted.connect(self._on_message_submitted)
+        self._chat_widget.conversation_selected.connect(self._on_conversation_selected)
+        self._chat_widget.conversation_create_requested.connect(self._on_new_conversation_requested)
 
         splitter.addWidget(left)
         splitter.addWidget(self._chat_widget)
@@ -306,6 +336,8 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(attribution)
 
         self._set_status("Not connected", "disconnected")
+        self._refresh_memory_health_ui()
+        self._initialize_conversations_ui()
 
     def _build_menu(self) -> None:
         help_menu: QMenu = self.menuBar().addMenu("Help")
@@ -335,6 +367,62 @@ class MainWindow(QMainWindow):
         self._conn_widget.load_config(self._config)
         self._chat_widget.load_config(self._config)
 
+    @Slot(object)
+    def _on_memory_health_snapshot(self, snapshot: object) -> None:
+        self._memory_health_widget.set_snapshot(snapshot)
+
+    def _refresh_memory_health_ui(self) -> None:
+        snapshot = self._memory.get_health_snapshot()
+        self._memory_health_widget.set_snapshot(snapshot)
+
+    def _initialize_conversations_ui(self) -> None:
+        station = self._config.connection.station_name
+        endpoint = self._config.connection.mcp_url
+        thread = self._memory.ensure_default_conversation(station, endpoint)
+        self._active_conversation_id = thread.conversation_id
+        self._load_conversations_ui()
+        self._load_active_conversation_history()
+
+    def _load_conversations_ui(self) -> None:
+        station = self._config.connection.station_name
+        endpoint = self._mcp.endpoint_url or self._config.connection.mcp_url
+        threads = self._memory.list_conversations(station, endpoint)
+        items = [(t.conversation_id, t.title) for t in threads]
+        self._sig_conversations_loaded.emit(items, self._active_conversation_id)
+
+    def _load_active_conversation_history(self) -> None:
+        if not self._active_conversation_id:
+            return
+        messages = self._memory.get_conversation_messages(self._active_conversation_id)
+        payload = [(m.role, m.content) for m in messages]
+        self._sig_conversation_history_loaded.emit(payload)
+
+    @Slot(list, str)
+    def _on_conversations_loaded(self, items: list, active_id: str) -> None:
+        normalized = [(str(item[0]), str(item[1])) for item in items]
+        self._chat_widget.set_conversations(normalized, active_id)
+
+    @Slot(list)
+    def _on_conversation_history_loaded(self, messages: list) -> None:
+        normalized = [(str(item[0]), str(item[1])) for item in messages]
+        self._chat_widget.load_history(normalized)
+
+    @Slot(str)
+    def _on_conversation_selected(self, conversation_id: str) -> None:
+        if not conversation_id or conversation_id == self._active_conversation_id:
+            return
+        self._active_conversation_id = conversation_id
+        self._load_active_conversation_history()
+
+    @Slot()
+    def _on_new_conversation_requested(self) -> None:
+        station = self._config.connection.station_name
+        endpoint = self._mcp.endpoint_url or self._config.connection.mcp_url
+        thread = self._memory.create_conversation(station, endpoint)
+        self._active_conversation_id = thread.conversation_id
+        self._load_conversations_ui()
+        self._load_active_conversation_history()
+
     # ------------------------------------------------------------------
     # Slots — connection
     # ------------------------------------------------------------------
@@ -356,6 +444,7 @@ class MainWindow(QMainWindow):
         l.base_url = settings.get("base_url", "")
 
         save_config(self._config)
+        self._initialize_conversations_ui()
 
         headers = build_headers(
             username=c.username,
@@ -415,6 +504,31 @@ class MainWindow(QMainWindow):
         )
         logger.info("Connected — %d tools", len(tools))
 
+        if self._memory.enabled:
+            profile_future = self._async_runner.submit(self._refresh_station_profile())
+            profile_future.add_done_callback(self._cb_after_station_profile_refresh)
+        self._refresh_memory_health_ui()
+
+    async def _refresh_station_profile(self) -> None:
+        """Fetch station.info and persist a lightweight local station profile."""
+        station_info_result = await self._mcp.call_tool("nmcp.station.info", {})
+        station_info_text = _format_tool_result_to_text(station_info_result)
+        self._memory.update_station_profile(
+            station_name=self._config.connection.station_name,
+            endpoint_url=self._mcp.endpoint_url or self._config.connection.mcp_url,
+            station_info_text=station_info_text,
+        )
+
+    def _cb_after_station_profile_refresh(self, future) -> None:
+        """Log station profile refresh outcomes without interrupting the user flow."""
+        try:
+            future.result()
+            logger.info("Memory station profile refreshed")
+            self._sig_memory_health.emit(self._memory.get_health_snapshot())
+        except Exception as exc:
+            logger.warning("Could not refresh memory station profile: %s", exc)
+            self._sig_memory_health.emit(self._memory.get_health_snapshot())
+
     @Slot(str)
     def _handle_conn_error(self, error: str) -> None:
         """Runs in Qt main thread."""
@@ -431,6 +545,7 @@ class MainWindow(QMainWindow):
         self._conn_widget.set_connected(False)
         self._chat_widget.append_system_message("Disconnected.")
         self._set_status("Not connected", "disconnected")
+        self._refresh_memory_health_ui()
 
     # ------------------------------------------------------------------
     # Slots — chat
@@ -455,6 +570,7 @@ class MainWindow(QMainWindow):
 
         self._chat_widget.append_user_message(message)
         self._pending_message = message
+        self._persist_chat_message("user", message)
 
         if self._chat_widget.is_plan_mode_enabled():
             self._chat_widget.append_system_message(
@@ -504,6 +620,14 @@ class MainWindow(QMainWindow):
             planning_mode=planning_mode,
             writes_permitted=writes_permitted,
             strict_paths=strict_paths,
+            memory_context=self._memory.build_prompt_context(
+                user_message=message,
+                station_name=self._config.connection.station_name,
+                endpoint_url=self._mcp.endpoint_url or self._config.connection.mcp_url,
+            )
+            + "\n\n"
+            + self._memory.build_conversation_context(self._active_conversation_id),
+            tool_observer=self._observe_tool_outcome,
         )
         agent.set_event_loop(self._async_runner.get_loop())
         self._current_agent = agent
@@ -519,6 +643,25 @@ class MainWindow(QMainWindow):
         future = self._async_runner.submit(agent.run(message, tools))
         future.add_done_callback(lambda _f: self._sig_agent_done.emit())
 
+    def _observe_tool_outcome(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        result_text: str,
+    ) -> None:
+        """Capture repeatable lessons and working-folder context from tool activity."""
+        try:
+            self._memory.learn_from_tool_result(
+                station_name=self._config.connection.station_name,
+                endpoint_url=self._mcp.endpoint_url or self._config.connection.mcp_url,
+                tool_name=tool_name,
+                arguments=arguments,
+                result_text=result_text,
+            )
+            self._sig_memory_health.emit(self._memory.get_health_snapshot())
+        except Exception as exc:
+            logger.warning("Could not learn from tool outcome for %s: %s", tool_name, exc)
+
     @Slot(str, str, str)
     def _on_approval_requested(
         self, tool_name: str, args_json: str, explanation: str
@@ -531,15 +674,18 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _on_tool_executed(self, tool_name: str, result_preview: str) -> None:
         self._chat_widget.append_tool_result(tool_name, result_preview)
+        self._persist_chat_message("tool", f"{tool_name}: {result_preview}")
 
     @Slot(str)
     def _on_message_complete(self, text: str) -> None:
         self._last_assistant_message = text
         self._chat_widget.complete_assistant_message(text)
+        self._persist_chat_message("assistant", text)
 
     @Slot(str)
     def _on_agent_error(self, error: str) -> None:
         self._chat_widget.append_error_message(error)
+        self._persist_chat_message("error", error)
 
     @Slot()
     def _handle_agent_done(self) -> None:
@@ -614,6 +760,20 @@ class MainWindow(QMainWindow):
     def _show_help_dialog(self) -> None:
         dialog = HelpDialog(self)
         dialog.exec()
+
+    def _persist_chat_message(self, role: str, content: str) -> None:
+        if not self._active_conversation_id:
+            return
+        try:
+            self._memory.append_conversation_message(
+                conversation_id=self._active_conversation_id,
+                role=role,
+                content=content,
+            )
+            self._load_conversations_ui()
+            self._sig_memory_health.emit(self._memory.get_health_snapshot())
+        except Exception as exc:
+            logger.warning("Could not persist chat message (%s): %s", role, exc)
 
     # ------------------------------------------------------------------
     # Window close
