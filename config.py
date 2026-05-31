@@ -41,6 +41,16 @@ if not getattr(sys, "frozen", False):
 CONFIG_PATH = _default_config_path()
 
 
+def _default_memory_root() -> str:
+    """Return the default local memory root directory."""
+    return str(CONFIG_PATH.parent / "memory")
+
+
+def _default_candy_docs_dir() -> str:
+    """Return the default Candy docs directory in the repository."""
+    return str((Path(__file__).resolve().parent / ".private" / "Candy").resolve())
+
+
 class ConnectionConfig(BaseModel):
     mcp_url: str = Field(
         default_factory=lambda: os.getenv("MCP_SERVER_URL", "http://localhost:8000/mcp")
@@ -68,9 +78,17 @@ class LLMConfig(BaseModel):
     base_url: str = ""  # optional override (e.g. local proxy)
 
 
+class MemoryConfig(BaseModel):
+    enabled: bool = True
+    prompt_token_budget: int = 1400
+    memory_root: str = Field(default_factory=_default_memory_root)
+    candy_docs_dir: str = Field(default_factory=_default_candy_docs_dir)
+
+
 class AppConfig(BaseModel):
     connection: ConnectionConfig = Field(default_factory=ConnectionConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
 def load_config() -> AppConfig:

@@ -185,6 +185,35 @@ Recommended maintenance workflow:
 
 ---
 
+## Packaging SQLite For Executables
+
+For novice-friendly installs, keep SQLite writable and outside the executable bundle:
+
+* Runtime DB path is under per-user app data (for example `%APPDATA%/nMCP-client/memory/memory.sqlite` on Windows).
+* On first run, the app bootstraps schema automatically.
+* If a bundled seed DB exists at `assets/memory_seed.sqlite`, it is copied to the writable runtime path before schema checks.
+
+This design works for both one-file and one-folder builds and avoids write failures inside bundled executables.
+
+### Windows Build Script
+
+Use `scripts/build_windows.ps1`:
+
+```powershell
+# One-folder build (recommended for field deployments)
+powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Mode onedir
+
+# One-file build
+powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1 -Mode onefile
+```
+
+The script automatically includes:
+
+* `.private/Candy` memory guidance docs
+* `assets/memory_seed.sqlite` when present
+
+---
+
 ## License
 
 MIT

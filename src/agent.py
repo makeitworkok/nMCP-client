@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+import re
+from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Signal
 
@@ -65,6 +66,8 @@ _SYSTEM_PROMPT = (
 )
 
 _MAX_ITERATIONS = 20  # safety cap to prevent infinite loops
+_LLM_RATE_LIMIT_MAX_RETRIES = 3
+_MAX_TOOL_RESULT_CHARS = 8000
 _WIRESHEET_OPERATION_TYPES = {
     "createComponent",
     "setSlot",
@@ -99,12 +102,16 @@ class AgentLoop:
         planning_mode: bool = False,
         writes_permitted: bool = True,
         strict_paths: bool = True,
+        memory_context: str = "",
+        tool_observer: Callable[[str, dict[str, Any], str], None] | None = None,
     ) -> None:
         self._mcp = mcp_client
         self._llm = llm_provider
         self._planning_mode = planning_mode
         self._writes_permitted = writes_permitted
         self._strict_paths = strict_paths
+        self._memory_context = memory_context.strip()
+        self._tool_observer = tool_observer
         self.signals = AgentSignals()
 
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -132,6 +139,8 @@ class AgentLoop:
         """Execute one user request end-to-end."""
         self._loop = asyncio.get_event_loop()
         system_prompt = _SYSTEM_PROMPT
+        if self._memory_context:
+            system_prompt += "\n\n" + self._memory_context
         if self._planning_mode:
             system_prompt += (
                 " You are currently in PLAN MODE. Do not execute tools. "
@@ -156,11 +165,35 @@ class AgentLoop:
             self.signals.status_changed.emit("Thinking…")
             logger.debug("Agent iteration %d", iteration + 1)
 
-            try:
-                response = await self._llm.get_response(tools)
-            except Exception as exc:
-                self.signals.error_occurred.emit(f"LLM error: {exc}")
-                logger.exception("LLM error on iteration %d", iteration + 1)
+            response = None
+            for attempt in range(_LLM_RATE_LIMIT_MAX_RETRIES + 1):
+                try:
+                    response = await self._llm.get_response(tools)
+                    break
+                except Exception as exc:
+                    wait_seconds = _parse_rate_limit_wait_seconds(str(exc))
+                    is_last_attempt = attempt >= _LLM_RATE_LIMIT_MAX_RETRIES
+                    if wait_seconds is None or is_last_attempt:
+                        self.signals.error_occurred.emit(f"LLM error: {exc}")
+                        logger.exception("LLM error on iteration %d", iteration + 1)
+                        return
+
+                    wait_seconds = min(max(wait_seconds, 0.5), 12.0)
+                    self.signals.status_changed.emit(
+                        f"Rate limited by provider; retrying in {wait_seconds:.1f}s…"
+                    )
+                    logger.warning(
+                        "Rate limited on iteration %d, attempt %d/%d. Retrying in %.2fs",
+                        iteration + 1,
+                        attempt + 1,
+                        _LLM_RATE_LIMIT_MAX_RETRIES + 1,
+                        wait_seconds,
+                    )
+                    await asyncio.sleep(wait_seconds)
+
+            if response is None:
+                self.signals.error_occurred.emit("LLM error: no response returned.")
+                self.signals.status_changed.emit("Ready")
                 return
 
             # Emit any intermediate text alongside tool calls
@@ -220,12 +253,23 @@ class AgentLoop:
             raw_result = await self._mcp.call_tool(tc.name, tc.arguments)
             result_text = _format_tool_result(raw_result)
             result_text = _augment_path_error(result_text, tc.arguments)
+            result_text = _balance_tool_result_text(result_text)
+            if self._tool_observer:
+                try:
+                    self._tool_observer(tc.name, tc.arguments, result_text)
+                except Exception as obs_exc:
+                    logger.warning("Tool observer failed for %s: %s", tc.name, obs_exc)
             preview = result_text[:300] + ("…" if len(result_text) > 300 else "")
             self.signals.tool_executed.emit(tc.name, preview)
             logger.info("Tool %s → %s", tc.name, result_text[:500])
             return result_text
         except Exception as exc:
             error = f"Tool execution error: {exc}"
+            if self._tool_observer:
+                try:
+                    self._tool_observer(tc.name, tc.arguments, error)
+                except Exception as obs_exc:
+                    logger.warning("Tool observer failed for %s: %s", tc.name, obs_exc)
             self.signals.status_changed.emit("Ready")
             self.signals.error_occurred.emit(error)
             logger.exception("Tool %s failed", tc.name)
@@ -265,6 +309,45 @@ def _format_tool_result(result: Any) -> str:
 _ROOT_DISCOVERY_PATHS = [
     "station:|slot:/",
 ]
+
+_RATE_LIMIT_WAIT_PATTERN = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+
+
+def _parse_rate_limit_wait_seconds(error_text: str) -> float | None:
+    """Extract provider-suggested retry delay (seconds) from a rate-limit message."""
+    lowered = error_text.lower()
+    if "rate limit" not in lowered and "429" not in lowered:
+        return None
+
+    match = _RATE_LIMIT_WAIT_PATTERN.search(error_text)
+    if not match:
+        return 2.0
+
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return 2.0
+
+
+def _balance_tool_result_text(result_text: str) -> str:
+    """Cap tool result size before feeding it back to the LLM to reduce TPM spikes."""
+    if len(result_text) <= _MAX_TOOL_RESULT_CHARS:
+        return result_text
+
+    head_len = 5000
+    tail_len = 2200
+    omitted = len(result_text) - head_len - tail_len
+    if omitted < 0:
+        omitted = len(result_text) - _MAX_TOOL_RESULT_CHARS
+
+    head = result_text[:head_len].rstrip()
+    tail = result_text[-tail_len:].lstrip()
+    return (
+        f"{head}\n\n"
+        f"[TRUNCATED TOOL RESULT: omitted {omitted} characters to control token usage. "
+        f"If you need more detail, call the tool again with tighter filters/limits.]\n\n"
+        f"{tail}"
+    )
 
 
 def _augment_path_error(result_text: str, tool_args: dict[str, Any] | None = None) -> str:
