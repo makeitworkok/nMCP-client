@@ -27,6 +27,7 @@ A PySide6 desktop application that connects to an MCP server, discovers availabl
 | OpenAI (GPT-4o, …) | ✅ |
 | Anthropic (Claude) | ⚠️ Not yet tested |
 | xAI (Grok) | ⚠️ Not yet tested |
+| OpenRouter | ⚠️ Not yet tested |
 | Ollama (local) | ⚠️ Not yet tested |
 | Rotating log file | ✅ |
 | Persistent per-user config (outside `dist`) | ✅ |
@@ -53,6 +54,7 @@ nMCP-client/
     │   ├── openai_provider.py
     │   ├── anthropic_provider.py
     │   ├── xai_provider.py
+    │   ├── openrouter_provider.py
     │   └── ollama_provider.py
     └── ui/
         ├── app.py           # MainWindow
@@ -117,9 +119,9 @@ Settings are persisted to a per-user config file automatically when you click **
 
 | Field | Description |
 |---|---|
-| **Provider** | `openai` · `anthropic` · `xai` · `ollama` |
-| **Model** | Model name (e.g. `gpt-4o`, `claude-opus-4-5`, `grok-3`, `llama3.1`) |
-| **API Key** | Provider API key (auto-filled from env if `OPENAI_API_KEY` etc. are set) |
+| **Provider** | `openai` · `anthropic` · `xai` · `openrouter` · `ollama` |
+| **Model** | Model name (e.g. `gpt-4o`, `claude-opus-4-5`, `grok-3`, `openai/gpt-4o-mini`, `llama3.1`) |
+| **API Key** | Provider API key (auto-filled from env if `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, etc. are set) |
 | **Base URL** | Optional override (defaults are set per provider) |
 
 ---
@@ -142,7 +144,7 @@ Use the **Help** menu in the main window:
 
 * **Quick Help** opens a tabbed guide with:
     * Quickstart steps
-    * API key acquisition guidance for OpenAI, Anthropic, and xAI
+    * API key acquisition guidance for OpenAI, Anthropic, xAI, and OpenRouter
     * Troubleshooting tips for common connection/model/key issues
 * **About nMCP Client** shows:
     * App name and version (read from `pyproject.toml`)

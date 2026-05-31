@@ -60,7 +60,7 @@ class ConnectionConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: str = "openai"  # openai | anthropic | xai | ollama
+    provider: str = "openai"  # openai | anthropic | xai | openrouter | ollama
     model: str = "gpt-4o"
     api_key: str = Field(
         default_factory=lambda: os.getenv("OPENAI_API_KEY", "")

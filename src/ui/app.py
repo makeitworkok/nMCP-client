@@ -127,6 +127,15 @@ def _create_llm_provider(config: AppConfig) -> BaseLLMProvider | None:
                 base_url=base_url or "https://api.x.ai/v1",
             )
 
+        if provider == "openrouter":
+            from src.llm.openrouter_provider import OpenRouterProvider
+
+            return OpenRouterProvider(
+                api_key=api_key,
+                model=model,
+                base_url=base_url or "https://openrouter.ai/api/v1",
+            )
+
         if provider == "ollama":
             from src.llm.ollama_provider import OllamaProvider
 

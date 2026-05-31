@@ -27,10 +27,12 @@ class OpenAIProvider(BaseLLMProvider):
         api_key: str,
         model: str = "gpt-4o",
         base_url: str | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url or None,
+            default_headers=default_headers,
         )
         self._model = model
         self._messages: list[dict[str, Any]] = []

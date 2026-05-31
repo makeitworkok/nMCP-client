@@ -20,12 +20,13 @@ from PySide6.QtWidgets import (
 
 from config import AppConfig
 
-_PROVIDERS = ["openai", "anthropic", "xai", "ollama"]
+_PROVIDERS = ["openai", "anthropic", "xai", "openrouter", "ollama"]
 
 _DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o",
     "anthropic": "claude-opus-4-5",
     "xai": "grok-3",
+    "openrouter": "openai/gpt-4o-mini",
     "ollama": "llama3.1",
 }
 
@@ -33,6 +34,7 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     "openai": "",
     "anthropic": "",
     "xai": "https://api.x.ai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
     "ollama": "http://localhost:11434/v1",
 }
 
@@ -40,6 +42,7 @@ _ENV_KEYS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "xai": "XAI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "ollama": "",
 }
 

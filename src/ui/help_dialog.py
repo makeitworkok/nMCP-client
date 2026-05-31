@@ -67,6 +67,7 @@ def _api_key_html() -> str:
       <li><b>OpenAI:</b> <a href='https://platform.openai.com/api-keys'>platform.openai.com/api-keys</a></li>
       <li><b>Anthropic:</b> <a href='https://console.anthropic.com/settings/keys'>console.anthropic.com/settings/keys</a></li>
       <li><b>xAI:</b> <a href='https://console.x.ai/'>console.x.ai</a></li>
+      <li><b>OpenRouter:</b> <a href='https://openrouter.ai/settings/keys'>openrouter.ai/settings/keys</a></li>
     </ul>
     <p><b>Security tips</b></p>
     <ul>
