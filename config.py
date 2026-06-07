@@ -58,6 +58,9 @@ class ConnectionConfig(BaseModel):
     station_name: str = Field(
         default_factory=lambda: os.getenv("NIAGARA_STATION_NAME", "")
     )
+    agent_name: str = Field(
+        default_factory=lambda: os.getenv("NMCP_AGENT_NAME", "nMCP-client")
+    )
     username: str = Field(
         default_factory=lambda: os.getenv("NIAGARA_USERNAME", "")
     )

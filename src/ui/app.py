@@ -365,12 +365,19 @@ class MainWindow(QMainWindow):
         self._status_label.setText(text)
         self._status_light.set_state(state)
 
+    def _connected_status_text(self, tool_count: int | None = None) -> str:
+        """Build a consistent connected status line including active agent identity."""
+        count = tool_count if tool_count is not None else len(self._tools)
+        endpoint = self._mcp.endpoint_url or self._config.connection.mcp_url
+        agent_name = (self._config.connection.agent_name or "nMCP-client").strip() or "nMCP-client"
+        return f"Connected to {endpoint}  |  Agent: {agent_name}  |  {count} tools"
+
     def _on_agent_status_changed(self, text: str) -> None:
         """Translate agent status text → indicator state."""
         if text.startswith(("Thinking", "Executing", "Waiting")):
             self._set_status(text, "busy")
         else:
-            self._set_status(f"Connected  |  {len(self._tools)} tools", "connected")
+            self._set_status(self._connected_status_text(), "connected")
 
     def _load_config_into_widgets(self) -> None:
         self._conn_widget.load_config(self._config)
@@ -442,6 +449,7 @@ class MainWindow(QMainWindow):
         c = self._config.connection
         c.mcp_url = settings["mcp_url"]
         c.station_name = settings.get("station_name", "")
+        c.agent_name = settings.get("agent_name", "")
         c.username = settings.get("username", "")
         c.password = settings.get("password", "")
         c.token = settings.get("token", "")
@@ -468,6 +476,7 @@ class MainWindow(QMainWindow):
             self._mcp.connect(
                 c.mcp_url,
                 headers,
+                agent_name=c.agent_name,
                 username=c.username,
                 password=c.password,
                 token=c.token,
@@ -503,14 +512,10 @@ class MainWindow(QMainWindow):
         self._tools = tools
         self._tools_widget.set_tools(tools)
         self._conn_widget.set_connected(True)
-        connected_url = self._mcp.endpoint_url or self._config.connection.mcp_url
         self._chat_widget.append_system_message(
             f"✅ Connected. {len(tools)} tool(s) available."
         )
-        self._set_status(
-            f"Connected to {connected_url}  |  {len(tools)} tools",
-            "connected",
-        )
+        self._set_status(self._connected_status_text(tool_count=len(tools)), "connected")
         logger.info("Connected — %d tools", len(tools))
 
         if self._memory.enabled:
@@ -706,7 +711,7 @@ class MainWindow(QMainWindow):
         self._pending_message = None
         self._chat_widget.enable_input()
         if self._status_state == "busy":
-            self._set_status(f"Connected  |  {len(self._tools)} tools", "connected")
+            self._set_status(self._connected_status_text(), "connected")
 
     def _handle_plan_review(self) -> None:
         dialog = PlanReviewDialog(self._last_assistant_message, self)
@@ -754,7 +759,7 @@ class MainWindow(QMainWindow):
             self._chat_widget.append_system_message("Plan execution cancelled.")
         self._chat_widget.enable_input()
         if self._status_state == "busy":
-            self._set_status(f"Connected  |  {len(self._tools)} tools", "connected")
+            self._set_status(self._connected_status_text(), "connected")
 
     def _show_about_dialog(self) -> None:
         dialog = AboutDialog(

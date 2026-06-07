@@ -17,15 +17,16 @@ from typing import Any
 
 import httpx
 from mcp import ClientSession
-from mcp.types import Tool
+from mcp.types import Implementation, Tool
 
 from src.mcp_proxy import NiagaraSession
 
 logger = logging.getLogger(__name__)
 
 
-def _build_initialize_payload() -> dict[str, Any]:
+def _build_initialize_payload(agent_name: str) -> dict[str, Any]:
     """Return the MCP initialize payload used for connection preflight."""
+    client_name = (agent_name or "nMCP-client").strip() or "nMCP-client"
     return {
         "jsonrpc": "2.0",
         "id": 0,
@@ -33,7 +34,7 @@ def _build_initialize_payload() -> dict[str, Any]:
         "params": {
             "protocolVersion": "2025-11-25",
             "capabilities": {},
-            "clientInfo": {"name": "mcp", "version": "0.0.1"},
+            "clientInfo": {"name": client_name, "version": "0.1.0"},
         },
     }
 
@@ -72,6 +73,7 @@ class NiagaraMCPClient:
         url: str,
         headers: dict[str, str] | None = None,
         transport: str = "streamable_http",
+        agent_name: str = "nMCP-client",
         username: str = "",
         password: str = "",
         token: str = "",
@@ -89,6 +91,8 @@ class NiagaraMCPClient:
         """
         await self.disconnect()
         hdrs = dict(headers or {})
+        resolved_agent_name = (agent_name or "nMCP-client").strip() or "nMCP-client"
+        self._apply_agent_headers(hdrs, resolved_agent_name)
         attempt_urls = self._candidate_endpoint_urls(url)
         last_exc: Exception | None = None
 
@@ -122,7 +126,12 @@ class NiagaraMCPClient:
                         raise
 
                 if transport == "streamable_http":
-                    await self._preflight_streamable_http(resolved_url, hdrs, cookies)
+                    await self._preflight_streamable_http(
+                        resolved_url,
+                        hdrs,
+                        cookies,
+                        resolved_agent_name,
+                    )
 
                 if transport == "sse":
                     from mcp.client.sse import sse_client
@@ -147,7 +156,14 @@ class NiagaraMCPClient:
                 read_stream, write_stream = streams[0], streams[1]
 
                 session = await exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
+                    ClientSession(
+                        read_stream,
+                        write_stream,
+                        client_info=Implementation(
+                            name=resolved_agent_name,
+                            version="0.1.0",
+                        ),
+                    )
                 )
                 await session.initialize()
             except Exception as exc:
@@ -171,9 +187,10 @@ class NiagaraMCPClient:
         url: str,
         headers: dict[str, str],
         cookies: httpx.Cookies,
+        agent_name: str,
     ) -> None:
         """Fail fast on auth/path errors before entering MCP transport internals."""
-        payload = _build_initialize_payload()
+        payload = _build_initialize_payload(agent_name)
         async with httpx.AsyncClient(
             headers=headers,
             cookies=cookies,
@@ -243,6 +260,16 @@ class NiagaraMCPClient:
         headers["X-MCP-Token"] = token
         if not headers.get("Authorization"):
             headers["Authorization"] = f"Bearer {token}"
+
+    def _apply_agent_headers(
+        self,
+        headers: dict[str, str],
+        agent_name: str,
+    ) -> None:
+        """Apply MCP agent identity header expected by newer nMCP servers."""
+        normalized = (agent_name or "nMCP-client").strip() or "nMCP-client"
+        if not headers.get("X-MCP-Agent"):
+            headers["X-MCP-Agent"] = normalized
 
     def _base_url_for_endpoint(self, url: str) -> str:
         """Return scheme://host[:port] from a full endpoint URL."""

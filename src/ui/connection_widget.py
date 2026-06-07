@@ -64,6 +64,7 @@ class ConnectionWidget(QWidget):
     def load_config(self, config: AppConfig) -> None:
         self._url_edit.setText(config.connection.mcp_url)
         self._station_edit.setText(config.connection.station_name)
+        self._agent_name_edit.setText(config.connection.agent_name)
         self._user_edit.setText(config.connection.username)
         self._pass_edit.setText(config.connection.password)
         self._token_edit.setText(config.connection.token)
@@ -84,6 +85,7 @@ class ConnectionWidget(QWidget):
         return {
             "mcp_url": self._url_edit.text().strip(),
             "station_name": self._station_edit.text().strip(),
+            "agent_name": self._agent_name_edit.text().strip(),
             "username": self._user_edit.text().strip(),
             "password": self._pass_edit.text(),
             "token": self._token_edit.text().strip(),
@@ -114,6 +116,10 @@ class ConnectionWidget(QWidget):
         self._station_edit = QLineEdit()
         self._station_edit.setPlaceholderText("MyStation")
         mcp_form.addRow("Station:", self._station_edit)
+
+        self._agent_name_edit = QLineEdit()
+        self._agent_name_edit.setPlaceholderText("nMCP-client")
+        mcp_form.addRow("Agent Name:", self._agent_name_edit)
 
         self._user_edit = QLineEdit()
         self._user_edit.setPlaceholderText("admin")

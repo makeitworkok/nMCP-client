@@ -1,12 +1,23 @@
 # nMCP-client
 
-Version: 0.0.1
+Version: v0.1.0
 
 Compatibility: Requires nMCP.jar v0.8.0+.
 
 Lightweight desktop MCP client for [nMCP server](https://github.com/makeitworkok/nMCP) connections.
 
 A PySide6 desktop application that connects to an MCP server, discovers available tools, and lets an LLM carry out BAS tasks (creating points, listing components, linking/wiring, etc.) with a human-approval gate for all write operations.
+
+## Release Notes
+
+### v0.1.0
+
+- Added configurable Agent Name in connection settings for nMCP agent validation.
+- Included MCP agent identity in both initialize payload and session client info.
+- Added required X-MCP-Agent request header support for newer nMCP validation rules.
+- Updated connected status bar text to show active agent identity.
+- Updated docs and environment examples to include agent naming configuration.
+- Compare: [v0.0.1...v0.1.0](https://github.com/makeitworkok/nMCP-client/compare/v0.0.1...v0.1.0)
 
 ---
 
@@ -112,6 +123,7 @@ Settings are persisted to a per-user config file automatically when you click **
 |---|---|
 | **URL** | Full MCP endpoint, e.g. `http://localhost:8000/mcp` |
 | **Station** | Niagara station name (forwarded to tools as context) |
+| **Agent Name** | MCP client identity sent in `initialize.clientInfo.name` (used by nMCP agent validation) |
 | **Username / Password** | HTTP Basic auth (used when no token is provided) |
 | **Token** | Bearer token — overrides username/password |
 
